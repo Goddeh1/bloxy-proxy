@@ -5,6 +5,7 @@ import com.velocitypowered.api.command.SimpleCommand;
 import dev.goddeh.retainlastserver.RetainLastServer;
 import dev.goddeh.retainlastserver.command.network.whitelist.*;
 import dev.goddeh.retainlastserver.config.MainConfig;
+import dev.goddeh.retainlastserver.config.MessagesConfig;
 import dev.goddeh.retainlastserver.config.WhitelistConfig;
 import net.kyori.adventure.text.Component;
 
@@ -24,11 +25,13 @@ public class NetworkCommand implements SimpleCommand {
     private final WhitelistAdminOnlyCommand whitelistAdminOnlyCommand;
     private final WhitelistOnCommand whitelistOnCommand;
     private final WhitelistOffCommand whitelistOffCommand;
+    private final MessagesConfig messagesConfig;
 
-    public NetworkCommand(RetainLastServer plugin, MainConfig mainConfig, WhitelistConfig whitelistConfig) {
+    public NetworkCommand(RetainLastServer plugin, MainConfig mainConfig, WhitelistConfig whitelistConfig, MessagesConfig messagesConfig) {
         this.plugin = plugin;
         this.mainConfig = mainConfig;
         this.whitelistConfig = whitelistConfig;
+        this.messagesConfig = messagesConfig;
         this.whitelistAddCommand = new WhitelistAddCommand(plugin, whitelistConfig);
         this.whitelistRemoveCommand = new WhitelistRemoveCommand(plugin, whitelistConfig);
         this.whitelistListCommand = new WhitelistListCommand(plugin, whitelistConfig);
@@ -117,6 +120,7 @@ public class NetworkCommand implements SimpleCommand {
             case "reload":
                 mainConfig.reload();
                 whitelistConfig.reload();
+                messagesConfig.reload();
                 source.sendMessage(plugin.getMessagesConfig().getComponent(
                         "config.reload",
                         "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7Config reload successful. §a§l✔",
