@@ -276,24 +276,48 @@ public class RetainLastServer {
             // If admin-only mode is on, only let players with blox.admin join
             if (whitelistConfig.isAdminOnly()) {
                 if (!player.hasPermission("blox.admin")) {
+                    // Broadcast rejection message to admins
+                    Map<String, String> placeholders = new HashMap<>();
+                    placeholders.put("player", player.getUsername());
+                    broadcastToAdmins(messagesConfig.getComponent(
+                            "admin.player_join_rejected_admin_only",
+                            "§c[DISCONNECT] §e%%player%% §ctried to connect, but failed: §6Admin-only",
+                            placeholders));
+
                     player.disconnect(messagesConfig.getComponent(
                             "player.admin_only",
-                            "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7This server is in admin-only mode.",
+                            "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7You're not authorised to connect to this network.",
                             null));
                     return;
                 }
             } else {
                 // Otherwise check if player is whitelisted or has admin permission
                 if (!whitelistConfig.isWhitelisted(player.getUniqueId()) && !player.hasPermission("blox.admin")) {
+                    // Broadcast rejection message to admins
+                    Map<String, String> placeholders = new HashMap<>();
+                    placeholders.put("player", player.getUsername());
+                    broadcastToAdmins(messagesConfig.getComponent(
+                            "admin.player_join_rejected_not_whitelisted",
+                            "§c[DISCONNECT] §e%%player%% §ctried to connect, but failed: §6Not Whitelisted",
+                            placeholders));
+
                     player.disconnect(messagesConfig.getComponent(
                             "player.not_whitelisted",
-                            "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7You are not whitelisted on this network.",
+                            "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7You're not authorised to connect to this network.",
                             null));
                     return;
                 }
             }
         } else if (!player.hasPermission("blox.connect")) {
             // If whitelist is disabled, fall back to the original permission check
+            // Broadcast rejection message to admins
+            Map<String, String> placeholders = new HashMap<>();
+            placeholders.put("player", player.getUsername());
+            broadcastToAdmins(messagesConfig.getComponent(
+                    "admin.player_join_rejected_no_permission",
+                    "§c[DISCONNECT] §e%%player%% §ctried to connect, but failed: §6Missing 'blox.connect' permission",
+                    placeholders));
+
             player.disconnect(messagesConfig.getComponent(
                     "player.not_authorized",
                     "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7You're not authorised to connect to this network.",
@@ -438,6 +462,16 @@ public class RetainLastServer {
                             player.getUsername(),
                             server.getServerInfo().getName());
                 });
+    }
+
+    /**
+     * Broadcasts a message to all online players with the blox.admin permission
+     * @param message The message to broadcast
+     */
+    private void broadcastToAdmins(Component message) {
+        proxy.getAllPlayers().stream()
+                .filter(p -> p.hasPermission("blox.admin"))
+                .forEach(admin -> admin.sendMessage(message));
     }
 
 
