@@ -16,6 +16,11 @@ import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import com.velocitypowered.api.proxy.server.ServerPing;
 import com.velocitypowered.api.scheduler.ScheduledTask;
+import dev.goddeh.retainlastserver.command.CommandManager;
+import dev.goddeh.retainlastserver.config.MainConfig;
+import dev.goddeh.retainlastserver.config.MessagesConfig;
+import dev.goddeh.retainlastserver.config.PlayerDataConfig;
+import dev.goddeh.retainlastserver.config.WhitelistConfig;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -30,43 +35,54 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 @Plugin(
-        id = "bloxcore",
-        name = "Bloxcore",
-        version = "1.0"
+        id = "bloxyproxy",
+        name = "BloxyProxy",
+        version = "2.0"
 )
 public class RetainLastServer {
     private final ProxyServer proxy;
     private final Path dataDirectory;
-    private final Map<UUID, String> playerLastServer;
     private final Map<RegisteredServer, Boolean> serverStatus;
-    private final Map<UUID, String> playersAwaitingReconnect;
     private ScheduledTask task;
-    private static final String LIMBO_SERVER = "limbo";
 
     @Inject
     private Logger logger;
+
+    //Config stuff
+    private MainConfig mainConfig;
+    private MessagesConfig messagesConfig;
+    private PlayerDataConfig playerDataConfig;
+    private WhitelistConfig whitelistConfig;
+    private CommandManager commandManager;
 
     @Inject
     public RetainLastServer(ProxyServer proxy, @DataDirectory Path dataDirectory) {
         this.proxy = proxy;
         this.dataDirectory = dataDirectory;
-        this.playerLastServer = new HashMap<>();
         this.serverStatus = new HashMap<>();
-        this.playersAwaitingReconnect = new HashMap<>();
     }
 
     @Subscribe
     public void onProxyInitialization(ProxyInitializeEvent event) {
+        this.mainConfig = new MainConfig(proxy, dataDirectory, logger);
+        this.messagesConfig = new MessagesConfig(proxy, dataDirectory, logger);
+        this.playerDataConfig = new PlayerDataConfig(proxy, dataDirectory, logger);
+        this.whitelistConfig = new WhitelistConfig(proxy, dataDirectory, logger, playerDataConfig);
+
+        this.commandManager = new CommandManager(this, proxy, whitelistConfig);
+
+        playerDataConfig.startAutosaveTask(this, 60);
+
         task = proxy.getScheduler()
                 .buildTask(this, this::checkServerStatus)
-                .repeat(5, TimeUnit.SECONDS)
+                .repeat(mainConfig.getServerCheckIntervalSeconds(), TimeUnit.SECONDS)
                 .schedule();
     }
 
     private void checkServerStatus() {
         Collection<RegisteredServer> servers = proxy.getAllServers();
         for (RegisteredServer server : servers) {
-            if (server.getServerInfo().getName().equals(LIMBO_SERVER)) continue;
+            if (server.getServerInfo().getName().equals(mainConfig.getLimboServer())) continue;
 
             boolean currentStatus = isServerOnline(server);
             Boolean previousStatus = serverStatus.get(server);
@@ -77,18 +93,20 @@ public class RetainLastServer {
                 String serverName = server.getServerInfo().getName();
                 if (currentStatus) {
                     // Server came online
-                    Component message = Component.text("§a[NETWORK] Server '" + serverName + "' is now online. ")
-                            .append(Component.text("[CONNECT]")
-                                    .color(NamedTextColor.GREEN)
-                                    .decorate(TextDecoration.BOLD)
-                                    .clickEvent(ClickEvent.runCommand("/server " + serverName)));
+                    Component message = messagesConfig.getServerOnlineMessage(serverName);
                     broadcastMessage(message);
 
                     // Attempt to reconnect players who were disconnected from this server
                     reconnectPlayers(server);
                 } else {
                     // Server went offline
-                    broadcastMessage("§c[NETWORK] Server '" + serverName + "' is now offline.");
+                    Map<String, String> placeholders = new HashMap<>();
+                    placeholders.put("server", serverName);
+                    broadcastMessage(messagesConfig.getComponent(
+                            "server.went_offline",
+                            "§c[NETWORK] Server '%%server%%' is now offline.",
+                            placeholders));
+
                     handleServerOffline(server);
                 }
                 serverStatus.put(server, currentStatus);
@@ -102,7 +120,7 @@ public class RetainLastServer {
             Optional<ServerInfo> currentServer = player.getCurrentServer().map(conn -> conn.getServerInfo());
             if (currentServer.isPresent() && currentServer.get().getName().equals(serverName)) {
                 // Save that this player was on this server
-                playersAwaitingReconnect.put(player.getUniqueId(), serverName);
+                playerDataConfig.setAwaitingReconnect(player.getUniqueId(), serverName);
                 // Connect them to limbo
                 connectToLimbo(player);
             }
@@ -111,23 +129,25 @@ public class RetainLastServer {
 
     private void reconnectPlayers(RegisteredServer server) {
         String serverName = server.getServerInfo().getName();
-        new HashMap<>(playersAwaitingReconnect).forEach((uuid, lastServer) -> {
-            if (lastServer.equals(serverName)) {
-                Optional<Player> playerOpt = proxy.getPlayer(uuid);
-                if (playerOpt.isPresent()) {
-                    Player player = playerOpt.get();
-                    if (player.getCurrentServer().map(conn ->
-                            conn.getServerInfo().getName().equals(LIMBO_SERVER)).orElse(false)) {
-                        player.createConnectionRequest(server).fireAndForget();
-                        playersAwaitingReconnect.remove(uuid);
-                    }
-                }
+
+        // Get all players
+        for (Player player : proxy.getAllPlayers()) {
+            String awaitingServer = playerDataConfig.getAwaitingReconnect(player.getUniqueId());
+
+            // If player is waiting for this server and they're currently in limbo
+            if (serverName.equals(awaitingServer) &&
+                    player.getCurrentServer()
+                            .map(conn -> conn.getServerInfo().getName().equals(mainConfig.getLimboServer()))
+                            .orElse(false)) {
+
+                player.createConnectionRequest(server).fireAndForget();
+                playerDataConfig.setAwaitingReconnect(player.getUniqueId(), null);
             }
-        });
+        }
     }
 
     private void connectToLimbo(Player player) {
-        Optional<RegisteredServer> limboServer = proxy.getServer(LIMBO_SERVER);
+        Optional<RegisteredServer> limboServer = proxy.getServer(mainConfig.getLimboServer());
         if (limboServer.isPresent() && isServerOnline(limboServer.get())) {
             player.createConnectionRequest(limboServer.get()).fireAndForget();
         } else {
@@ -136,7 +156,10 @@ public class RetainLastServer {
                     .anyMatch(this::isServerOnline);
 
             if (!anyServerAvailable) {
-                player.disconnect(Component.text("All servers are currently offline. Please try again later."));
+                player.disconnect(messagesConfig.getComponent(
+                        "server.all_offline",
+                        "All servers are currently offline. Please try again later.",
+                        null));
             } else {
                 // Try to find any online server if limbo is not available
                 proxy.getAllServers().stream()
@@ -154,15 +177,15 @@ public class RetainLastServer {
         Player player = event.getPlayer();
         if (!event.kickedDuringServerConnect() && event.getServer() != null) {
             String serverName = event.getServer().getServerInfo().getName();
-            if (!serverName.equals(LIMBO_SERVER)) {
-                playersAwaitingReconnect.put(player.getUniqueId(), serverName);
+            if (!serverName.equals(mainConfig.getLimboServer())) {
+                playerDataConfig.setAwaitingReconnect(player.getUniqueId(), serverName);
             }
         }
 
         // If player was kicked from a server, send them to limbo unless they're disconnecting from the proxy
         if (!event.kickedDuringServerConnect()) {
             event.setResult(KickedFromServerEvent.RedirectPlayer.create(
-                    proxy.getServer(LIMBO_SERVER).orElse(null)
+                    proxy.getServer(mainConfig.getLimboServer()).orElse(null)
             ));
         }
     }
@@ -176,8 +199,8 @@ public class RetainLastServer {
 
         // If player manually connects to a non-limbo server while waiting for reconnect,
         // remove them from the reconnect list
-        if (!nextServerName.equals(LIMBO_SERVER)) {
-            playersAwaitingReconnect.remove(player.getUniqueId());
+        if (!nextServerName.equals(mainConfig.getLimboServer())) {
+            playerDataConfig.setAwaitingReconnect(player.getUniqueId(), null);
         } else {
             // Player connected to limbo - handle priority redirect
             proxy.getScheduler()
@@ -187,22 +210,28 @@ public class RetainLastServer {
         }
 
         // Save last server if it's not limbo
-        if (!nextServerName.equals(LIMBO_SERVER)) {
-            playerLastServer.put(player.getUniqueId(), nextServerName);
+        if (!nextServerName.equals(mainConfig.getLimboServer())) {
+            playerDataConfig.setLastServer(player.getUniqueId(), nextServerName);
             logger.debug("Saved {}'s last connection as '{}'", player.getUsername(), nextServerName);
         }
 
         // Only broadcast switch message if it's not involving limbo
-        if (!nextServerName.equals(LIMBO_SERVER) &&
-                (previousServer == null || !previousServer.getServerInfo().getName().equals(LIMBO_SERVER))) {
+        if (!nextServerName.equals(mainConfig.getLimboServer()) &&
+                (previousServer == null || !previousServer.getServerInfo().getName().equals(mainConfig.getLimboServer()))) {
+
+            Map<String, String> placeholders = new HashMap<>();
+            placeholders.put("player", player.getUsername());
+            placeholders.put("from", previousServer != null ? previousServer.getServerInfo().getName() : "Unknown");
+            placeholders.put("to", nextServerName);
+
             proxy.getAllPlayers().stream()
                     .filter(p -> p.hasPermission("blox.admin"))
                     .forEach(admin -> {
-                        String message = "§6[SWITCH] §e" + player.getUsername() + ": " +
-                                (previousServer != null ? previousServer.getServerInfo().getName() : "Unknown") +
-                                " §f->§e " + nextServerName;
-                        Component component = Component.text(message);
-                        admin.sendMessage(component);
+                        Component message = messagesConfig.getComponent(
+                                "player.switch",
+                                "§6[SWITCH] §e%%player%%: %%from%% §f->§e %%to%%",
+                                placeholders);
+                        admin.sendMessage(message);
                     });
         }
     }
@@ -211,31 +240,27 @@ public class RetainLastServer {
     public void onPlayerDisconnect(DisconnectEvent event) {
         Player player = event.getPlayer();
 
-        // Only save last server if it's not limbo
-        Optional<String> currentServer = player.getCurrentServer()
-                .map(serverConnection -> serverConnection.getServerInfo().getName())
-                .filter(name -> !name.equals(LIMBO_SERVER));
-
-        if (currentServer.isPresent() && player.hasPermission("blox.admin")) {
-            playerLastServer.put(player.getUniqueId(), currentServer.get());
-            logger.info("Saved {}'s last connection as '{}'", player.getUsername(), currentServer.get());
-        }
-
+        // Send disconnect notification
         if (player.hasPermission("blox.admin")) {
+            Map<String, String> placeholders = new HashMap<>();
+            placeholders.put("player", player.getUsername());
+
             proxy.getAllPlayers().stream()
                     .filter(p -> p.hasPermission("blox.admin"))
                     .forEach(admin -> {
-                        String message = "§c[DISCONNECT] " + player.getUsername();
-                        Component component = Component.text(message);
-                        admin.sendMessage(component);
+                        Component message = messagesConfig.getComponent(
+                                "player.disconnect",
+                                "§c[DISCONNECT] %%player%%",
+                                placeholders);
+                        admin.sendMessage(message);
                     });
         }
 
         // Only clean up reconnect tracking if they're not in limbo
         if (!player.getCurrentServer()
-                .map(conn -> conn.getServerInfo().getName().equals(LIMBO_SERVER))
+                .map(conn -> conn.getServerInfo().getName().equals(mainConfig.getLimboServer()))
                 .orElse(false)) {
-            playersAwaitingReconnect.remove(player.getUniqueId());
+            playerDataConfig.setAwaitingReconnect(player.getUniqueId(), null);
         }
     }
 
@@ -243,9 +268,36 @@ public class RetainLastServer {
     public void onPlayerJoin(PostLoginEvent event) {
         Player player = event.getPlayer();
 
-        if (!player.hasPermission("blox.connect")) {
-            player.disconnect(Component.text("§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7You're not authorised to connect to this network.")
-                    .color(NamedTextColor.RED));
+        // Record connection in player data
+        playerDataConfig.playerConnected(player);
+
+        // Check whitelist status
+        if (whitelistConfig.isEnabled()) {
+            // If admin-only mode is on, only let players with blox.admin join
+            if (whitelistConfig.isAdminOnly()) {
+                if (!player.hasPermission("blox.admin")) {
+                    player.disconnect(messagesConfig.getComponent(
+                            "player.admin_only",
+                            "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7This server is in admin-only mode.",
+                            null));
+                    return;
+                }
+            } else {
+                // Otherwise check if player is whitelisted or has admin permission
+                if (!whitelistConfig.isWhitelisted(player.getUniqueId()) && !player.hasPermission("blox.admin")) {
+                    player.disconnect(messagesConfig.getComponent(
+                            "player.not_whitelisted",
+                            "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7You are not whitelisted on this network.",
+                            null));
+                    return;
+                }
+            }
+        } else if (!player.hasPermission("blox.connect")) {
+            // If whitelist is disabled, fall back to the original permission check
+            player.disconnect(messagesConfig.getComponent(
+                    "player.not_authorized",
+                    "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7You're not authorised to connect to this network.",
+                    null));
             return;
         }
 
@@ -258,12 +310,18 @@ public class RetainLastServer {
         // Connect to limbo first - priority redirect will happen after limbo connection
         connectToLimbo(player);
 
+        // Send connect notification
+        Map<String, String> placeholders = new HashMap<>();
+        placeholders.put("player", player.getUsername());
+
         proxy.getAllPlayers().stream()
                 .filter(p -> p.hasPermission("blox.admin"))
                 .forEach(admin -> {
-                    String message = "§a[CONNECT] " + player.getUsername();
-                    Component component = Component.text(message);
-                    admin.sendMessage(component);
+                    Component message = messagesConfig.getComponent(
+                            "player.connect",
+                            "§a[CONNECT] %%player%%",
+                            placeholders);
+                    admin.sendMessage(message);
                 });
     }
 
@@ -298,7 +356,7 @@ public class RetainLastServer {
         for (RegisteredServer server : proxy.getAllServers()) {
             String serverName = server.getServerInfo().getName();
             // Skip limbo server from priority checks
-            if (serverName.equals(LIMBO_SERVER)) continue;
+            if (serverName.equals(mainConfig.getLimboServer())) continue;
 
             // Check for priority permissions (up to priority 100 for safety)
             for (int priority = 1; priority <= 100; priority++) {
@@ -323,7 +381,7 @@ public class RetainLastServer {
 
     private void handlePriorityRedirect(Player player) {
         // Check if player is awaiting reconnect to a server
-        String awaitingServer = playersAwaitingReconnect.get(player.getUniqueId());
+        String awaitingServer = playerDataConfig.getAwaitingReconnect(player.getUniqueId());
         if (awaitingServer != null) {
             Optional<RegisteredServer> awaitingServerOpt = proxy.getServer(awaitingServer);
             if (awaitingServerOpt.isPresent() && isServerOnline(awaitingServerOpt.get())) {
@@ -356,8 +414,8 @@ public class RetainLastServer {
 
         // If no priority server is available, try last server only if player has permission
         if (player.hasPermission("server.last_server")) {
-            String lastServer = playerLastServer.get(player.getUniqueId());
-            if (lastServer != null && !lastServer.equals(LIMBO_SERVER)) {
+            String lastServer = playerDataConfig.getLastServer(player.getUniqueId());
+            if (lastServer != null && !lastServer.equals(mainConfig.getLimboServer())) {
                 Optional<RegisteredServer> lastServerOpt = proxy.getServer(lastServer);
                 if (lastServerOpt.isPresent() && isServerOnline(lastServerOpt.get())) {
                     player.createConnectionRequest(lastServerOpt.get()).fireAndForget();
@@ -371,7 +429,7 @@ public class RetainLastServer {
         // If no priority or last server available, try to find any available server
         // But only if the player is not awaiting reconnect to a specific server
         proxy.getAllServers().stream()
-                .filter(server -> !server.getServerInfo().getName().equals(LIMBO_SERVER))
+                .filter(server -> !server.getServerInfo().getName().equals(mainConfig.getLimboServer()))
                 .filter(this::isServerOnline)
                 .findFirst()
                 .ifPresent(server -> {
@@ -381,4 +439,39 @@ public class RetainLastServer {
                             server.getServerInfo().getName());
                 });
     }
+
+
+
+    /**
+     * Gets the proxy server instance
+     * @return The proxy server
+     */
+    public ProxyServer getProxy() {
+        return proxy;
+    }
+
+    /**
+     * Gets the messages config
+     * @return The messages config
+     */
+    public MessagesConfig getMessagesConfig() {
+        return messagesConfig;
+    }
+
+    /**
+     * Gets the main config
+     * @return The main config
+     */
+    public MainConfig getMainConfig() {
+        return mainConfig;
+    }
+
+    /**
+     * Gets the player data config
+     * @return The player data config
+     */
+    public PlayerDataConfig getPlayerDataConfig() {
+        return playerDataConfig;
+    }
+
 }
