@@ -4,6 +4,7 @@ import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.command.SimpleCommand;
 import dev.goddeh.retainlastserver.RetainLastServer;
 import dev.goddeh.retainlastserver.command.network.whitelist.*;
+import dev.goddeh.retainlastserver.config.MainConfig;
 import dev.goddeh.retainlastserver.config.WhitelistConfig;
 import net.kyori.adventure.text.Component;
 
@@ -15,6 +16,7 @@ import java.util.concurrent.CompletableFuture;
 public class NetworkCommand implements SimpleCommand {
 
     private final RetainLastServer plugin;
+    private final MainConfig mainConfig;
     private final WhitelistConfig whitelistConfig;
     private final WhitelistAddCommand whitelistAddCommand;
     private final WhitelistRemoveCommand whitelistRemoveCommand;
@@ -23,8 +25,9 @@ public class NetworkCommand implements SimpleCommand {
     private final WhitelistOnCommand whitelistOnCommand;
     private final WhitelistOffCommand whitelistOffCommand;
 
-    public NetworkCommand(RetainLastServer plugin, WhitelistConfig whitelistConfig) {
+    public NetworkCommand(RetainLastServer plugin, MainConfig mainConfig, WhitelistConfig whitelistConfig) {
         this.plugin = plugin;
+        this.mainConfig = mainConfig;
         this.whitelistConfig = whitelistConfig;
         this.whitelistAddCommand = new WhitelistAddCommand(plugin, whitelistConfig);
         this.whitelistRemoveCommand = new WhitelistRemoveCommand(plugin, whitelistConfig);
@@ -55,6 +58,9 @@ public class NetworkCommand implements SimpleCommand {
         switch (args[0].toLowerCase()) {
             case "whitelist":
                 handleWhitelistCommand(source, Arrays.copyOfRange(args, 1, args.length));
+                break;
+            case "config":
+                handleConfigCommand(source, Arrays.copyOfRange(args, 1, args.length));
                 break;
             default:
                 sendHelp(source);
@@ -94,6 +100,32 @@ public class NetworkCommand implements SimpleCommand {
                 source.sendMessage(plugin.getMessagesConfig().getComponent(
                         "whitelist.usage",
                         "Usage: /network whitelist <add/remove/list/adminonly/on/off>",
+                        null));
+                break;
+        }
+    }
+
+    private void handleConfigCommand(CommandSource source, String[] args) {
+        if (args.length == 0) {
+            source.sendMessage(plugin.getMessagesConfig().getComponent(
+                    "config.usage",
+                    "Usage: /network config <reload>",
+                    null));
+            return;
+        }
+        switch (args[0].toLowerCase()) {
+            case "reload":
+                mainConfig.reload();
+                whitelistConfig.reload();
+                source.sendMessage(plugin.getMessagesConfig().getComponent(
+                        "config.reload",
+                        "§f§lᴛʙ ɴᴇᴛᴡᴏʀᴋ §8§l| §7Config reload successful. §a§l✔",
+                        null));
+                break;
+            default:
+                source.sendMessage(plugin.getMessagesConfig().getComponent(
+                        "config.usage",
+                        "Usage: /network config <reload>",
                         null));
                 break;
         }

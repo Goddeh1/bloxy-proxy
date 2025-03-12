@@ -69,7 +69,7 @@ public class RetainLastServer {
         this.playerDataConfig = new PlayerDataConfig(proxy, dataDirectory, logger);
         this.whitelistConfig = new WhitelistConfig(proxy, dataDirectory, logger, playerDataConfig);
 
-        this.commandManager = new CommandManager(this, proxy, whitelistConfig);
+        this.commandManager = new CommandManager(this, proxy, mainConfig, whitelistConfig);
 
         playerDataConfig.startAutosaveTask(this, 60);
 
